@@ -8,11 +8,6 @@ terraform {
       source  = "telmate/proxmox"
       version = "2.9.10"
     }
-
-    ssh = {
-      source  = "loafoe/ssh"
-      version = "2.6.0"
-    }
   }
 }
 
@@ -151,10 +146,28 @@ data "coder_parameter" "a30_disk_size" {
 data "coder_parameter" "a40_should_install_code_server" {
   name         = "a40_should_install_code_server"
   display_name = "Install Code Server"
-  description  = "Should Code Server be installed after deploy?"
+  description  = "Should Code Server be installed during deploy?"
   default      = 1
   type         = "string"
   icon         = "/icon/code.svg"
+  mutable      = false
+  option {
+    name  = "Yes"
+    value = 1
+  }
+  option {
+    name  = "No"
+    value = 0
+  }
+}
+
+data "coder_parameter" "a50_should_install_docker_ce" {
+  name         = "a50_should_install_docker_ce"
+  display_name = "Install Docker CE"
+  description  = "Should Docker CE be installed during deploy?"
+  default      = 1
+  type         = "string"
+  icon         = "/icon/docker.svg"
   mutable      = false
   option {
     name  = "Yes"
@@ -187,6 +200,23 @@ resource "coder_app" "code-server" {
   }
 }
 
+resource "coder_app" "docker-portainer" {
+  count        = data.coder_parameter.a50_should_install_docker_ce.value != 0 ? 1 : 0
+  agent_id     = coder_agent.main.id
+  slug         = "docker-portainer"
+  display_name = "docker-portainer"
+  url          = "http://localhost:9000"
+  icon         = "/icon/docker.svg"
+  subdomain    = false
+  share        = "owner"
+
+  healthcheck {
+    url       = "http://localhost:9000/api/system/status"
+    interval  = 3
+    threshold = 10
+  }
+}
+
 provider "proxmox" {
   pm_api_url      = var.proxmox_api_url != "" ? var.proxmox_api_url : null
   pm_user         = var.proxmox_api_user
@@ -209,13 +239,50 @@ locals {
   cpu_cores_count = data.coder_parameter.a10_cpu_cores_count.value
   memory_size     = data.coder_parameter.a20_memory_size.value
   disk_size       = data.coder_parameter.a30_disk_size.value
-  code_server_bootstrap_script = (data.coder_parameter.a40_should_install_code_server.value == 0 ? "" : <<-EOT
+  app_bootstrap_script_coder_server = (data.coder_parameter.a40_should_install_code_server.value == 0 ? "" : <<-EOT
 CODE_SERVER_DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/coder/code-server/releases/latest | jq -r '.assets[].browser_download_url' | grep 'amd64.deb')
 curl -fL $CODE_SERVER_DOWNLOAD_URL -o /tmp/code_server.deb
 dpkg -i /tmp/code_server.deb
 rm /tmp/code_server.deb
 
 systemctl enable --now code-server@${data.coder_workspace.me.owner}
+EOT
+  )
+
+  app_bootstrap_script_docker_ce = (data.coder_parameter.a50_should_install_docker_ce.value == 0 ? "" : <<-EOT
+# Install Docker CE
+curl https://get.docker.com | bash
+usermod -aG docker ${lower(data.coder_workspace.me.owner)}
+
+# Install Portainer CE
+PORTAINER_CE_DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/portainer/portainer/releases/latest | jq -r '.assets[].browser_download_url' | grep 'linux-amd64' | grep '.tar.gz')
+mkdir /tmp/portainer_ce && cd /tmp/portainer_ce
+curl -fL $PORTAINER_CE_DOWNLOAD_URL -o portainer_ce.tgz
+tar -zxf portainer_ce.tgz
+mv portainer /opt/portainer
+mkdir /var/lib/portainer
+chown ${lower(data.coder_workspace.me.owner)} /var/lib/portainer
+
+echo '[Unit]
+Description=Portainer CE
+After=docker.service
+Wants=docker.service
+
+[Service]
+User=${data.coder_workspace.me.owner}
+ExecStart=/opt/portainer/portainer --bind=127.0.0.1:9000 --data=/var/lib/portainer
+Restart=always
+RestartSec=10
+TimeoutStopSec=90
+KillMode=process
+
+OOMScoreAdjust=-800
+SyslogIdentifier=portainer
+
+[Install]
+WantedBy=multi-user.target' > /etc/systemd/system/portainer.service
+
+systemctl enable --now portainer
 EOT
   )
 }
@@ -383,7 +450,8 @@ SyslogIdentifier=coder-agent
 [Install]
 WantedBy=multi-user.target' > /etc/systemd/system/coder-agent.service
 
-${local.code_server_bootstrap_script}
+${local.app_bootstrap_script_coder_server}
+${local.app_bootstrap_script_docker_ce}
 
 systemctl enable --now coder-agent
 
