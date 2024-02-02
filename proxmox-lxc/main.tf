@@ -290,7 +290,7 @@ resource "tls_private_key" "rsa_4096" {
   rsa_bits  = 4096
 }
 
-# Provision the proxmox VM
+# Provision the Proxmox LXC
 resource "proxmox_lxc" "lxc" {
 
   # This VM's data is persistent! 
@@ -387,13 +387,6 @@ ${local.code_server_bootstrap_script}
 
 systemctl enable --now coder-agent
 
-until [[ $(systemctl is-active coder-agent) == "active" ]]; do sleep 1; done
-
-sudo -u ${lower(data.coder_workspace.me.owner)} mkdir -p /home/${data.coder_workspace.me.owner}/.config/code-server
-sudo -u ${lower(data.coder_workspace.me.owner)} echo "proxy-domain: '$VSCODE_PROXY_URI'" | tee -a /home/${data.coder_workspace.me.owner}/.config/code-server/config.tmp
-sudo -u ${lower(data.coder_workspace.me.owner)} echo "app-name: '$CODER_WORKSPACE_NAME'" | tee -a /home/${data.coder_workspace.me.owner}/.config/code-server/config.tmp
-
-
 EOT
     destination = "/tmp/proxmox_lxc_${local.vm_name}_coder_agent_bootstrap.sh"
   }
@@ -413,7 +406,7 @@ EOT
   }
 }
 
-# Stop the VM from the console
+# Stop the LXC via ssh
 resource "null_resource" "stop_vm" {
 
   count = data.coder_workspace.me.transition == "stop" ? 1 : 0
