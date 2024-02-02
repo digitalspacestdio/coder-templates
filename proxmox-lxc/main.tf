@@ -349,10 +349,8 @@ dpkg-reconfigure locales
 update-locale LANG=en_US.UTF-8
 
 adduser \
-  --system \
   --shell /bin/bash \
-  --gecos 'User for system managing' \
-  --group \
+  --gecos 'User for workspace owner' \
   --disabled-password \
   --home '/home/${lower(data.coder_workspace.me.owner)}' \
   '${lower(data.coder_workspace.me.owner)}'
