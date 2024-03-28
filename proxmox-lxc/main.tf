@@ -500,14 +500,7 @@ resource "terraform_data" "bootstrap_script_app_kubernetes_k3s" {
     set -e
 
     # Install k3s
-    # curl -sfL https://get.k3s.io | sh -s - server --disable servicelb --disable traefik --snapshotter native --write-kubeconfig-mode 644
     curl -sfL https://get.k3s.io | sh -s - server --snapshotter native --write-kubeconfig-mode 644
-
-    # Install metallb
-    # /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.4/config/manifests/metallb-native.yaml
-
-    # Waiting metallb for endpoints
-    # until /usr/local/bin/kubectl get endpoints -n metallb-system 2> /dev/null | grep metallb-webhook-service | awk '{print $2}' | grep '[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+\:[0-9]\+' > /dev/null; do sleep 1; done
 
     EOT
 }
