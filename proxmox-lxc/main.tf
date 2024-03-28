@@ -6,7 +6,7 @@ terraform {
     }
     proxmox = {
       source  = "telmate/proxmox"
-      version = "2.9.14"
+      version = "3.0.1-rc1"
     }
   }
 }
@@ -176,24 +176,6 @@ data "coder_parameter" "a130_disk_size" {
   # }
 }
 
-data "coder_parameter" "a40_should_install_code_server" {
-  name         = "a40_should_install_code_server"
-  display_name = "Install Code Server"
-  description  = "Should Code Server be installed during deploy?"
-  default      = 1
-  type         = "number"
-  icon         = "/icon/code.svg"
-  mutable      = true
-  option {
-    name  = "Yes"
-    value = 1
-  }
-  option {
-    name  = "No"
-    value = 0
-  }
-}
-
 data "coder_parameter" "a540_should_install_code_server" {
   name         = "a540_should_install_code_server"
   display_name = "Install Code Server"
@@ -230,6 +212,29 @@ data "coder_parameter" "a550_should_install_docker_ce" {
   }
   option {
     name  = "None"
+    value = 0
+  }
+}
+
+
+data "coder_parameter" "a560_should_install_kubernetes" {
+  name         = "a560_should_install_kubernetes"
+  display_name = "Install Kubernetes"
+  description  = "Should Kubernetes be installed during deploy?"
+  default      = 0
+  type         = "number"
+  icon         = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/39/Kubernetes_logo_without_workmark.svg/1234px-Kubernetes_logo_without_workmark.svg.png"
+  mutable      = true
+  option {
+    name  = "K3S"
+    value = 2
+  }
+  # option {
+  #   name  = "K0S"
+  #   value = 1
+  # }
+  option {
+    name  = "No"
     value = 0
   }
 }
@@ -346,6 +351,25 @@ resource "terraform_data" "coder_workspace_template_version" {
   input = data.coder_workspace.me.template_version
 }
 
+resource "terraform_data" "proxmox_lxc_config_extra" {
+  input = <<-EOT
+  lxc.prlimit.nofile = 65536
+  lxc.prlimit.memlock = unlimited
+  lxc.apparmor.profile = unconfined
+  lxc.cap.drop =
+  ## rtc
+  lxc.cgroup2.devices.allow = "c 254:0 rm"
+  ## tun
+  lxc.cgroup2.devices.allow = "c 10:200 rwm"
+  ## hpet
+  lxc.cgroup2.devices.allow = "c 10:228 rwm"
+  ## kvm
+  lxc.cgroup2.devices.allow = "c 10:232 rwm"
+  lxc.cgroup.devices.allow = a
+  lxc.mount.auto = "proc:rw sys:rw cgroup:rw"
+  EOT
+}
+
 resource "terraform_data" "bootstrap_script_base_system" {
   input = <<-EOT
   #!/bin/bash
@@ -422,9 +446,8 @@ resource "terraform_data" "bootstrap_script_app_docker_ce" {
   #!/bin/bash
   set -e
 
-  # Installing Docker CE and Portainer CE if it's absent
+  # Installing Docker CE if it's absent
   which docker > /dev/null || {
-    # Install Docker CE
     curl https://get.docker.com | bash
     usermod -aG docker ${local.username}
   }
@@ -433,42 +456,86 @@ resource "terraform_data" "bootstrap_script_app_docker_ce" {
 
 resource "terraform_data" "bootstrap_script_app_portainer_ce" {
   input = data.coder_parameter.a550_should_install_docker_ce.value < 2 ? "" :<<-EOT
-#!/bin/bash
-set -e
+    #!/bin/bash
+    set -e
 
-# Installing Portainer CE if it's absent
-[[ ! -e /opt/portainer/portainer ]] && {
-  # Install Portainer CE
-  PORTAINER_CE_DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/portainer/portainer/releases/latest | jq -r '.assets[].browser_download_url' | grep 'linux-amd64' | grep '.tar.gz')
-  mkdir /tmp/portainer_ce && cd /tmp/portainer_ce
-  curl -fL $PORTAINER_CE_DOWNLOAD_URL -o portainer_ce.tgz
-  tar -zxf portainer_ce.tgz
-  mv portainer /opt/portainer
-  mkdir /var/lib/portainer
-  chown ${local.username} /var/lib/portainer
+    # Installing Portainer CE if it's absent
+    [[ ! -e /opt/portainer/portainer ]] && {
+      # Install Portainer CE
+      PORTAINER_CE_DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/portainer/portainer/releases/latest | jq -r '.assets[].browser_download_url' | grep 'linux-amd64' | grep '.tar.gz')
+      mkdir /tmp/portainer_ce && cd /tmp/portainer_ce
+      curl -fL $PORTAINER_CE_DOWNLOAD_URL -o portainer_ce.tgz
+      tar -zxf portainer_ce.tgz
+      mv portainer /opt/portainer
+      mkdir /var/lib/portainer
+      chown ${local.username} /var/lib/portainer
 
-  echo '[Unit]
-  Description=Portainer CE
-  After=docker.service
-  Wants=docker.service
+      echo '[Unit]
+      Description=Portainer CE
+      After=docker.service
+      Wants=docker.service
 
-  [Service]
-  User=${local.username}
-  ExecStart=/opt/portainer/portainer --bind=127.0.0.1:9000 --data=/var/lib/portainer
-  Restart=always
-  RestartSec=10
-  TimeoutStopSec=90
-  KillMode=process
+      [Service]
+      User=${local.username}
+      ExecStart=/opt/portainer/portainer --bind=127.0.0.1:9000 --data=/var/lib/portainer
+      Restart=always
+      RestartSec=10
+      TimeoutStopSec=90
+      KillMode=process
 
-  OOMScoreAdjust=-800
-  SyslogIdentifier=portainer
+      OOMScoreAdjust=-800
+      SyslogIdentifier=portainer
 
-  [Install]
-  WantedBy=multi-user.target' > /etc/systemd/system/portainer.service
+      [Install]
+      WantedBy=multi-user.target' > /etc/systemd/system/portainer.service
 
-  systemctl enable --now portainer
+      systemctl enable --now portainer
+    }
+    EOT
 }
-EOT
+
+resource "terraform_data" "bootstrap_script_app_kubernetes_k3s" {
+  input = tonumber(data.coder_parameter.a560_should_install_kubernetes.value) != 2 ? "" :<<-EOT
+    #!/bin/bash
+    set -e
+
+    # Install k3s
+    # curl -sfL https://get.k3s.io | sh -s - server --disable servicelb --disable traefik --snapshotter native --write-kubeconfig-mode 644
+    curl -sfL https://get.k3s.io | sh -s - server --snapshotter native --write-kubeconfig-mode 644
+
+    # Install metallb
+    # /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.4/config/manifests/metallb-native.yaml
+
+    # Waiting metallb for endpoints
+    # until /usr/local/bin/kubectl get endpoints -n metallb-system 2> /dev/null | grep metallb-webhook-service | awk '{print $2}' | grep '[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+\:[0-9]\+' > /dev/null; do sleep 1; done
+
+    EOT
+}
+
+resource "terraform_data" "bootstrap_script_app_kubernetes_k0s" {
+  input = tonumber(data.coder_parameter.a560_should_install_kubernetes.value) != 1 ? "" :<<-EOT
+    #!/bin/bash
+    set -e
+
+    set -x
+    mkdir -p /etc/k0s
+    /usr/local/bin/k0s config create | sed 's/metricsPort: 8080/metricsPort: 8188/' > /etc/k0s/k0s.yaml
+    /usr/local/bin/k0s install controller --single -c /etc/k0s/k0s.yaml --force
+
+    if ! grep 'ExecStart=.*--ignore-pre-flight-checks' /etc/systemd/system/k0scontroller.service; then 
+      sed -i 's/\(ExecStart=.*\)/\1 --ignore-pre-flight-checks/' /etc/systemd/system/k0scontroller.service
+    fi
+
+    systemctl daemon-reload
+    if systemctl is-active --quiet k0scontroller.service; then
+      /usr/local/bin/k0s stop
+      while systemctl is-active --quiet k0scontroller.service; do sleep 1; done
+    fi
+
+    systemctl reset-failed k0scontroller.service
+    /usr/local/bin/k0s start
+    set +x
+    EOT
 }
 
 resource "terraform_data" "bootstrap_script_coder_agent_init" {
@@ -529,6 +596,8 @@ resource "terraform_data" "bootstrap_script" {
     terraform_data.bootstrap_script_app_code_server,
     terraform_data.bootstrap_script_app_docker_ce,
     terraform_data.bootstrap_script_app_portainer_ce,
+    terraform_data.bootstrap_script_app_kubernetes_k3s,
+    terraform_data.bootstrap_script_app_kubernetes_k0s,
     terraform_data.bootstrap_script_coder_agent_init,
   ]
 
@@ -537,6 +606,19 @@ resource "terraform_data" "bootstrap_script" {
       terraform_data.bootstrap_script_coder_agent_init.input,
     ]
   }
+
+  provisioner "file" {
+    connection {
+      type        = "ssh"
+      user        = var.proxmox_ssh_user
+      host        = var.proxmox_ssh_host
+      port        = var.proxmox_ssh_port
+      private_key = file(var.proxmox_ssh_key_path)
+    }
+    destination = "/usr/share/lxc/config/common.conf.d/05-extra.conf"
+    content = terraform_data.proxmox_lxc_config_extra.input
+  }
+
 
   provisioner "file" {
     connection {
@@ -557,6 +639,8 @@ resource "terraform_data" "bootstrap_script" {
     ${terraform_data.bootstrap_script_app_code_server.input}
     ${terraform_data.bootstrap_script_app_docker_ce.input}
     ${terraform_data.bootstrap_script_app_portainer_ce.input}
+    ${terraform_data.bootstrap_script_app_kubernetes_k3s.input}
+    ${terraform_data.bootstrap_script_app_kubernetes_k0s.input}
     ${terraform_data.bootstrap_script_coder_agent_init.input}
     EOT
   }
@@ -595,6 +679,8 @@ resource "proxmox_lxc" "lxc" {
   memory       = parseint(local.memory_size, 10)
 
   features {
+    ## fuse requires root@pam permissions
+    # fuse    = true 
     nesting = true
   }
   
@@ -662,10 +748,14 @@ resource "null_resource" "start_vm" {
       private_key = file(var.proxmox_ssh_key_path)
     }
     inline = [
-      "pct status $(pct list | grep \"\\b${local.vm_name}\\b\" | awk '{print $1}') | grep -v running && pct start $(pct list | grep \"\\b${local.vm_name}\\b\" | awk '{print $1}') || /bin/true",
-      "lxc-wait $(pct list | grep \"\\b${local.vm_name}\\b\" | awk '{print $1}') -s RUNNING",
-      "pct push $(pct list | grep \"\\b${local.vm_name}\\b\" | awk '{print $1}') /tmp/proxmox_lxc_${local.vm_name}_bootstrap.sh /bootstrap.sh",
-      "pct exec $(pct list | grep \"\\b${local.vm_name}\\b\" | awk '{print $1}') /bin/bash /bootstrap.sh",
+      "sysctl -w vm.panic_on_oom=0",
+      "sysctl -w vm.overcommit_memory=1",
+      "sysctl -w kernel.panic=10",
+      "sysctl -w kernel.panic_on_oops=1",
+      "pct status $(pct list | awk '{ print $1\"@\"$3 }' | grep \"@${local.vm_name}$\" | awk -F@ '{print $1}') | grep -v running && pct start $(pct list | awk '{ print $1\"@\"$3 }' | grep \"@${local.vm_name}$\" | awk -F@ '{print $1}') || /bin/true",
+      "lxc-wait $(pct list | awk '{ print $1\"@\"$3 }' | grep \"@${local.vm_name}$\" | awk -F@ '{print $1}') -s RUNNING",
+      "pct push $(pct list | awk '{ print $1\"@\"$3 }' | grep \"@${local.vm_name}$\" | awk -F@ '{print $1}') /tmp/proxmox_lxc_${local.vm_name}_bootstrap.sh /bootstrap.sh",
+      "pct exec $(pct list | awk '{ print $1\"@\"$3 }' | grep \"@${local.vm_name}$\" | awk -F@ '{print $1}') /bin/bash /bootstrap.sh",
     ]
   }
 }
