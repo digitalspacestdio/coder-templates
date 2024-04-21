@@ -150,7 +150,7 @@ data "coder_parameter" "a130_disk_size" {
   type         = "string"
   icon         = "/icon/database.svg"
   mutable      = false
-  
+
   option {
     name  = "24 GB"
     value = 24
@@ -278,7 +278,13 @@ data "coder_parameter" "a270_mysql_formula" {
   mutable      = true
   option {
     name  = "Mysql 8.0"
+    description = "IP: 127.0.0.1; Port: 3306; User: root; Password: empty"
     value = "mysql80"
+  }
+  option {
+    name  = "Mysql 5.7"
+    description = "IP: 127.0.0.1; Port: 3357; User: root; Password: empty"
+    value = "mysql57"
   }
   option {
     name  = "No"
@@ -374,7 +380,7 @@ data "coder_workspace" "me" {
 resource "coder_agent" "main" {
   os   = "linux"
   arch = "amd64"
-  dir  = "/home/${lower(data.coder_workspace.me.owner)}"
+  dir  = "/home/${lower(data.coder_workspace.me.owner)}/www/local/${data.coder_workspace.me.name}"
   auth = "token"
   startup_script = <<EOT
   #!/bin/sh
@@ -395,8 +401,13 @@ resource "coder_agent" "main" {
 
   PROXY_DOMAIN_WWW_DIR=$(echo $VSCODE_PROXY_DOMAIN | sed 's/{{port}}/www/' | awk -F\. '{ for(i=1;i<NF;i++) printf $i"." }' | awk -F\. '{ for(i=NF;i>0;i--) printf $i"/" }')
   if [ ! -f $HOME/www/$PROXY_DOMAIN_WWW_DIR/index.php ]; then
-    mkdir -p $HOME/www/$PROXY_DOMAIN_WWW_DIR
+    mkdir -p "$HOME/www/$PROXY_DOMAIN_WWW_DIR"
     echo "<?php phpinfo();" > $HOME/www/$PROXY_DOMAIN_WWW_DIR/index.php
+  fi
+
+  if [ ! -e "$HOME/www/local/${data.coder_workspace.me.name}" ]; then
+    mkdir -p "$HOME/www/local"
+    ln -s $(realpath "$HOME/www/$PROXY_DOMAIN_WWW_DIR") "$HOME/www/local/${data.coder_workspace.me.name}"
   fi
   
   EOT
@@ -421,6 +432,13 @@ resource "coder_agent" "main" {
     interval     = 600 # every 10 minutes
     timeout      = 30  # df can take a while on large filesystems
     script       = "coder stat disk --path /home/${lower(data.coder_workspace.me.owner)}"
+  }
+
+  env = {
+    GIT_AUTHOR_NAME = "${data.coder_workspace.me.owner}"
+    GIT_COMMITTER_NAME = "${data.coder_workspace.me.owner}"
+    GIT_AUTHOR_EMAIL = "${data.coder_workspace.me.owner_email}"
+    GIT_COMMITTER_EMAIL = "${data.coder_workspace.me.owner_email}"
   }
 }
 
@@ -547,8 +565,14 @@ resource "terraform_data" "bootstrap_script_base_system" {
   input = <<-EOT
   #!/bin/bash
   set -e
-
+  set -x
   export DEBIAN_FRONTEND=noninteractive
+  echo '# Packages and Updates from the Hetzner Ubuntu Mirror
+  deb http://mirror.hetzner.com/ubuntu/packages jammy           main restricted universe multiverse
+  deb http://mirror.hetzner.com/ubuntu/packages jammy-updates   main restricted universe multiverse
+  deb http://mirror.hetzner.com/ubuntu/packages jammy-backports main restricted universe multiverse
+  deb http://mirror.hetzner.com/ubuntu/packages jammy-security  main restricted universe multiverse
+  '> /etc/apt/sources.list
 
   # Install base packages if absent
   if ! which sudo git curl wget jq htop nload vim pv > /dev/null; then
@@ -612,6 +636,7 @@ resource "terraform_data" "bootstrap_script_app_code_server" {
   input = <<-EOT
   #!/bin/bash
   set -e
+  set -x
 
   # Installing Code-Server if it's absent
   which code-server > /dev/null || {
@@ -629,6 +654,7 @@ resource "terraform_data" "bootstrap_script_app_docker_ce" {
   input = data.coder_parameter.a550_should_install_docker_ce.value < 1 ? "" : <<-EOT
   #!/bin/bash
   set -e
+  set -x
 
   # Installing Docker CE if it's absent
   which docker > /dev/null || {
@@ -802,7 +828,6 @@ resource "terraform_data" "bootstrap_script" {
     destination = "/usr/share/lxc/config/common.conf.d/05-extra.conf"
     content = terraform_data.proxmox_lxc_config_extra.input
   }
-
 
   provisioner "file" {
     connection {
